@@ -8,142 +8,156 @@ import pickle
 import queue
 import time
 
-# Sahifa sozlamalari
+# --- SAHIFA SOZLAMALARI ---
 st.set_page_config(page_title="AI Gender Recognition", page_icon="🎙️", layout="centered")
 
-# CSS orqali dizaynni biroz chiroyliroq qilamiz
+# Dizayn uchun maxsus CSS
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stButton>button { width: 100%; border-radius: 20px; }
-    .result-card {
+    .stApp { background-color: #f8f9fa; }
+    .result-box {
         padding: 30px;
-        border-radius: 15px;
+        border-radius: 20px;
         text-align: center;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-top: 20px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05);
     }
     </style>
     """, unsafe_allow_html=True)
 
-# Model va Scalerni keshga yuklash
+# --- MODELNI YUKLASH (KESHLANGAN) ---
 @st.cache_resource
-def load_assets():
+def load_resources():
     try:
+        # Model va Scaler nomlarini o'z fayllaringizga moslang
         model = tf.keras.models.load_model('final_uzbek_gender_model.h5')
         with open('gender_scaler.pkl', 'rb') as f:
             scaler = pickle.load(f)
         return model, scaler
     except Exception as e:
-        st.error(f"Model yuklashda xatolik: {e}")
+        st.error(f"Resurslarni yuklashda xatolik: {e}")
         return None, None
 
-model, scaler = load_assets()
+model, scaler = load_resources()
 
-# --- REAL-TIME AUDIO PROTSESSOR ---
-class GenderProcessor(AudioProcessorBase):
+# --- AUDIO PROTSESSOR KLASSI ---
+class GenderAudioProcessor(AudioProcessorBase):
     def __init__(self) -> None:
         self.result_queue = queue.Queue()
 
     def recv_audio(self, frame):
-        # Audio ma'lumotni massivga o'tkazish
-        audio_data = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
+        # Audio signallarni normallashtirish
+        audio = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
         sr = frame.sample_rate
         
         try:
-            # MFCC (Treningdagi kabi 40 ta parametr)
-            mfccs = librosa.feature.mfcc(y=audio_data, sr=sr, n_mfcc=40)
-            mfccs_scaled = np.mean(mfccs.T, axis=0)
+            # 1. Feature extraction (MFCC)
+            mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
+            mfccs_processed = np.mean(mfccs.T, axis=0).reshape(1, -1)
             
+            # 2. Prediction
             if model and scaler:
-                features = scaler.transform(mfccs_scaled.reshape(1, -1))
+                features = scaler.transform(mfccs_processed)
                 prediction = model.predict(features, verbose=0)[0][0]
                 
                 gender = "Ayol" if prediction > 0.5 else "Erkak"
-                prob = prediction if prediction > 0.5 else 1 - prediction
-                self.result_queue.put((gender, prob))
+                confidence = prediction if prediction > 0.5 else 1 - prediction
+                
+                # Natijani navbatga (queue) qo'shish
+                self.result_queue.put((gender, confidence))
         except Exception:
-            pass
+            pass # Shovqin yoki xatolik bo'lsa o'tkazib yuborish
         
         return frame
 
 # --- ASOSIY INTERFEYS ---
-st.title("🎙️ Uzbek Gender AI")
-st.write("Ovoz orqali jinsni aniqlash tizimi (99% aniqlik)")
+st.title("🎙️ O'zbek Ovozli Jins Aniqlash")
+st.caption("Sun'iy intellekt yordamida real vaqtda ovoz tahlili")
 
-selected = option_menu(
+tab_choice = option_menu(
     menu_title=None,
-    options=["Fayl yuklash", "Jonli muloqot"],
+    options=["Fayl yuklash", "Jonli Mikrofon"],
     icons=["cloud-upload", "mic"],
-    menu_icon="cast",
-    default_index=0,
     orientation="horizontal",
+    styles={"container": {"padding": "0!important", "background-color": "#fafafa"}}
 )
 
-# STUN serverlar (ulanish barqaror bo'lishi uchun)
-RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+# STUN serverlar (ulanish barqarorligi uchun)
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
+)
 
-if selected == "Fayl yuklash":
-    st.info("Audio faylni (.wav, .mp3) yuklang")
-    file = st.file_uploader("", type=['wav', 'mp3', 'm4a'])
+if tab_choice == "Fayl yuklash":
+    uploaded_file = st.file_uploader("Audio faylni tanlang (MP3, WAV)", type=['wav', 'mp3', 'm4a'], label_visibility="collapsed")
     
-    if file:
-        st.audio(file)
-        if st.button("Tahlil qilish"):
-            with st.spinner("Sun'iy intellekt o'ylamoqda..."):
-                audio, sr = librosa.load(file, sr=16000)
-                mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
-                mfccs_scaled = np.mean(mfccs.T, axis=0)
-                features = scaler.transform(mfccs_scaled.reshape(1, -1))
-                pred = model.predict(features, verbose=0)[0][0]
-                
-                res = "AYOL" if pred > 0.5 else "ERKAK"
-                p = pred if pred > 0.5 else 1 - pred
-                clr = "#FF4B4B" if res == "AYOL" else "#1F77B4"
-                
-                st.markdown(f"""
-                    <div class="result-card" style="border: 3px solid {clr}; background-color: {clr}11;">
-                        <h1 style="color: {clr};">{res}</h1>
-                        <h3>Ishonch darajasi: {p*100:.1f}%</h3>
-                    </div>
-                """, unsafe_allow_html=True)
+    if uploaded_file:
+        st.audio(uploaded_file)
+        if st.button("Tahlilni boshlash"):
+            with st.spinner("Tahlil qilinmoqda..."):
+                try:
+                    y, sr = librosa.load(uploaded_file, sr=16000)
+                    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+                    mfccs_scaled = np.mean(mfccs.T, axis=0).reshape(1, -1)
+                    
+                    features = scaler.transform(mfccs_scaled)
+                    pred = model.predict(features, verbose=0)[0][0]
+                    
+                    res_label = "AYOL" if pred > 0.5 else "ERKAK"
+                    res_prob = pred if pred > 0.5 else 1 - pred
+                    color = "#FF4B4B" if res_label == "AYOL" else "#1F77B4"
+                    
+                    st.markdown(f"""
+                        <div class="result-box" style="border: 2px solid {color}; background-color: {color}10;">
+                            <h2 style="color: {color};">{res_label}</h2>
+                            <p>Ishonch darajasi: {res_prob*100:.1f}%</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Faylni o'qishda xatolik: {e}")
 
 else:
-    st.warning("Diqqat: Mikrofon ishlashi uchun START tugmasini bosing va ruxsat bering.")
+    st.info("START tugmasini bosing va gapiring. Tizim avtomatik tahlil qiladi.")
     
-    ctx = webrtc_streamer(
-        key="gender-mic-v3",
+    # WebRTC streamer
+    webrtc_ctx = webrtc_streamer(
+        key="gender-streamer-pro",
         mode=WebRtcMode.SENDONLY,
+        audio_processor_factory=GenderAudioProcessor,
         rtc_configuration=RTC_CONFIG,
-        audio_processor_factory=GenderProcessor,
         media_stream_constraints={"video": False, "audio": True},
         async_processing=True,
     )
 
-    status_placeholder = st.empty()
+    output_placeholder = st.empty()
 
-    if ctx.state.playing:
+    # Xatoliklarning oldini olish uchun asosiy tekshiruv
+    if webrtc_ctx.state.playing:
         while True:
-            if ctx.audio_processor:
+            # 1. Protsessor yaratilganini tekshirish
+            if webrtc_ctx.audio_processor is not None:
                 try:
-                    # Queue'dan natijani olish (timeout bilan)
-                    gender, prob = ctx.audio_processor.result_queue.get(timeout=1.5)
-                    color = "#FF4B4B" if gender == "Ayol" else "#1F77B4"
+                    # 2. Queue'dan ma'lumot olish (timeout xatolikni oldini oladi)
+                    gender, prob = webrtc_ctx.audio_processor.result_queue.get(timeout=2.0)
                     
-                    with status_placeholder.container():
+                    bg_color = "#FF4B4B" if gender == "Ayol" else "#1F77B4"
+                    
+                    with output_placeholder.container():
                         st.markdown(f"""
-                            <div class="result-card" style="border: 3px solid {color}; background-color: {color}22;">
-                                <h1 style="color: {color};">{gender}</h1>
-                                <h3>Jonli tahlil: {prob*100:.1f}%</h3>
-                                <p>Gapirishda davom eting...</p>
+                            <div class="result-box" style="border: 2px solid {bg_color}; background-color: {bg_color}15;">
+                                <h1 style="color: {bg_color};">{gender.upper()}</h1>
+                                <h3>Aniqlik: {prob*100:.1f}%</h3>
+                                <small>Jonli tahlil rejimi faol</small>
                             </div>
                         """, unsafe_allow_html=True)
                 except queue.Empty:
+                    # Hali ma'lumot kelmagan bo'lsa tsiklni davom ettirish
                     continue
+                except Exception:
+                    break
             else:
-                # Protsessor hali yuklanmagan bo'lsa kutish
-                status_placeholder.write("Ulanmoqda...")
+                output_placeholder.write("⏳ Ovoz oqimi ulanmoqda...")
                 time.sleep(0.5)
             
-            # Agar foydalanuvchi STOP bossa tsikldan chiqish
-            if not ctx.state.playing:
+            # Agar STOP tugmasi bosilsa, tsiklni to'xtatish
+            if not webrtc_ctx.state.playing:
                 break
