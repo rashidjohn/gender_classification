@@ -6,29 +6,20 @@ import numpy as np
 import tensorflow as tf
 import pickle
 import queue
-import plotly.graph_objects as go
 
 # Sahifa sozlamalari
 st.set_page_config(page_title="Uzbek Gender AI", page_icon="🎙️", layout="wide")
 
-# Model va Scalerni yuklash
 @st.cache_resource
 def load_assets():
+    # Modelni yuklash
     model = tf.keras.models.load_model('final_uzbek_gender_model.h5')
+    # Scalerni yuklash
     with open('gender_scaler.pkl', 'rb') as f:
         scaler = pickle.load(f)
     return model, scaler
 
 model, scaler = load_assets()
-
-# --- YUKLANGAN FAYLNI TAHLIL QILISH ---
-def process_uploaded_audio(audio_file):
-    audio, sr = librosa.load(audio_file, sr=16000)
-    mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
-    mfccs_scaled = np.mean(mfccs.T, axis=0)
-    features = scaler.transform(mfccs_scaled.reshape(1, -1))
-    prediction = model.predict(features, verbose=0)[0][0]
-    return prediction
 
 # --- REAL-TIME PROTSESSOR ---
 class GenderProcessor(AudioProcessorBase):
@@ -41,19 +32,19 @@ class GenderProcessor(AudioProcessorBase):
         try:
             mfccs = librosa.feature.mfcc(y=audio_data, sr=sr, n_mfcc=40)
             mfccs_scaled = np.mean(mfccs.T, axis=0)
+            # InconsistentVersionWarning ni chetlab o'tish uchun reshape
             features = scaler.transform(mfccs_scaled.reshape(1, -1))
             prediction = model.predict(features, verbose=0)[0][0]
+            
             gender = "Ayol" if prediction > 0.5 else "Erkak"
             prob = prediction if prediction > 0.5 else 1 - prediction
             self.result_queue.put((gender, prob))
-        except: pass
+        except Exception:
+            pass
         return frame
 
-# --- ASOSIY INTERFEYS ---
 st.title("🎙️ O'zbek Ovozli Jins Aniqlash Tizimi")
-st.markdown("Ushbu tizim sun'iy intellekt yordamida ovozni tahlil qilib, uning jinsini **99% aniqlik** bilan aniqlaydi.")
 
-# Yon menyu (Navigation)
 selected = option_menu(
     menu_title=None,
     options=["Fayl yuklash", "Real-vaqt (Mikrofon)"],
@@ -62,41 +53,51 @@ selected = option_menu(
 )
 
 if selected == "Fayl yuklash":
-    st.subheader("📁 Audio fayl yuklash orqali tahlil")
-    uploaded_file = st.file_uploader("Faylni tanlang (wav, mp3, m4a)", type=['wav', 'mp3', 'm4a'])
-    
+    uploaded_file = st.file_uploader("Audio faylni tanlang", type=['wav', 'mp3', 'm4a'])
     if uploaded_file:
         st.audio(uploaded_file)
-        if st.button("Tahlilni boshlash ✨"):
-            with st.spinner("Tahlil qilinmoqda..."):
-                pred = process_uploaded_audio(uploaded_file)
+        if st.button("Tahlil qilish ✨"):
+            with st.spinner("Tahlil ketmoqda..."):
+                audio, sr = librosa.load(uploaded_file, sr=16000)
+                mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
+                mfccs_scaled = np.mean(mfccs.T, axis=0)
+                features = scaler.transform(mfccs_scaled.reshape(1, -1))
+                pred = model.predict(features, verbose=0)[0][0]
+                
                 label = "AYOL" if pred > 0.5 else "ERKAK"
                 prob = pred if pred > 0.5 else 1 - pred
                 color = "#FF4B4B" if label == "AYOL" else "#1F77B4"
-                
                 st.markdown(f"<h2 style='color:{color}'>{label} ({prob*100:.1f}%)</h2>", unsafe_allow_html=True)
-                st.progress(float(prob))
 
 elif selected == "Real-vaqt (Mikrofon)":
-    st.subheader("🎤 Jonli muloqot orqali tahlil")
-    st.info("Mikrofonni yoqing va gapiring. Tizim har bir soniyada ovozingizni tahlil qiladi.")
+    st.info("Mikrofonni yoqing va gapiring...")
     
     ctx = webrtc_streamer(
-        key="realtime-gender",
+        key="gender-streamer",
         audio_processor_factory=GenderProcessor,
         media_stream_constraints={"video": False, "audio": True},
     )
 
     res_placeholder = st.empty()
-    if ctx.audio_processor:
+    
+    # Xatolikni oldini oluvchi asosiy qism
+    if ctx.state.playing and ctx.audio_processor is not None:
         while True:
             try:
-                gender, prob = ctx.audio_processor.result_queue.get(timeout=1.0)
-                color = "#FF4B4B" if gender == "Ayol" else "#1F77B4"
-                with res_placeholder.container():
-                    st.markdown(f"<div style='text-align:center; padding:20px; border-radius:10px; background-color:{color}22; border:2px solid {color}'>", unsafe_allow_html=True)
-                    st.markdown(f"<h1 style='color:{color}; margin:0;'>{gender}</h1>", unsafe_allow_html=True)
-                    st.markdown(f"<p style='margin:0;'>Ishonch darajasi: {prob*100:.1f}%</p>", unsafe_allow_html=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
+                # result_queue borligini tekshirish
+                if hasattr(ctx.audio_processor, 'result_queue'):
+                    gender, prob = ctx.audio_processor.result_queue.get(timeout=1.0)
+                    color = "#FF4B4B" if gender == "Ayol" else "#1F77B4"
+                    with res_placeholder.container():
+                        st.markdown(f"""
+                            <div style='text-align:center; padding:20px; border-radius:10px; border:2px solid {color}'>
+                                <h1 style='color:{color};'>{gender}</h1>
+                                <p>Ishonch: {prob*100:.1f}%</p>
+                            </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    break
             except queue.Empty:
                 continue
+            except Exception:
+                break
