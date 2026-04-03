@@ -3,6 +3,6 @@ streamlit-option-menu
 streamlit-webrtc
 librosa
 tensorflow-cpu
-numpy
+numpy<2.0.0
 scikit-learn
 plotly
