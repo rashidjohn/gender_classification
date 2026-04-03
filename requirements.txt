@@ -1,8 +1,7 @@
-streamlit
+streamlit==1.56.0
 streamlit-option-menu
 streamlit-webrtc
 librosa
 tensorflow-cpu
-numpy<2.0.0
-scikit-learn
-plotly
+numpy==1.26.4
+scikit-learn==1.8.0
